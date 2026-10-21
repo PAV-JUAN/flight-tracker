@@ -38,5 +38,24 @@ services:
     depends_on:
       - db
 
+  web:
+    build: ./web
+    container_name: flight-web
+    restart: unless-stopped
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    environment:
+      DB_HOST: db
+      DB_USER: web_reader
+      DB_PASSWORD: ${WEB_DB_PASSWORD}
+    ports:
+      - "8097:8000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    depends_on:
+      - db
+
 volumes:
   grafana-data:
