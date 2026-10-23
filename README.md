@@ -1,67 +1,69 @@
 # Flight Tracker
 
-A self-hosted flight price tracker running on my home Ubuntu server, with a public website to browse the results.
+I fly Montreal ↔ Amsterdam a lot, in both directions, and I'm planning to move there for a year. Fares on this route jump around a lot, so I wanted to actually know when the cheap days are instead of guessing. Now my home server checks every Wednesday and keeps the history.
 
 **Live:** [flights.ricamivida.com](https://flights.ricamivida.com)
 
-Every Wednesday it scans one-way fares between Montreal (YUL) and Amsterdam (AMS) in both directions for the next 11 months, separating direct flights from options with layovers. Prices are stored in PostgreSQL, explored privately in Grafana, and shown publicly on **Fare Watch**, a small web app I built for it.
+It started as a Python script saving prices to PostgreSQL, with a Grafana dashboard only I could see. Then I wanted to share it with friends, and Grafana isn't really something you send to people, so I built Fare Watch: a small website just for this.
 
-![Fare Watch on desktop](docs/fare-watch.png)
+[![Fare Watch on desktop](docs/fare-watch.png)](docs/fare-watch.png)
 
-## Fare Watch (the website)
+## What Fare Watch shows
 
-- **Boarding-pass header** to flip the direction (YUL → AMS or AMS → YUL) and choose any stops or direct only
-- **Cheapest days** from the latest scan, with days at the same price grouped on one card
-- **11-month calendar** colored from cheap to expensive, so cheap stretches stand out at a glance
-- **Price history** for any day you click, one point per weekly scan
-- **One currency for both directions.** Fares from Amsterdam are sold in euros and fares from Montreal in Canadian dollars, so everything is converted to the currency you pick (CAD by default) using the daily European Central Bank rate. The original price stays visible next to the converted one.
-- Choices live in the URL (for example `#AMS-YUL/direct/EUR`), so a link opens exactly the same view
-- Works on phones
+- A boarding-pass style header to switch direction (YUL → AMS or AMS → YUL) and pick direct flights only or any number of stops
+- The cheapest days from the latest scan, with days at the same price grouped together
+- An 11-month calendar colored from cheap to expensive, so the cheap stretches jump out
+- The price history of any day you click, one point per weekly scan
+- Everything in one currency, CAD by default, or EUR if you switch (more on that below)
+- Your choices stay in the URL (for example `#AMS-YUL/direct/EUR`), so you can send someone a link to exactly what you're looking at
+- It works on phones, which is where I check it most
 
-<img src="docs/fare-watch-phone.png" alt="Fare Watch on a phone" width="300">
+[![Fare Watch on a phone](docs/fare-watch-phone.png)](docs/fare-watch-phone.png)
 
-## Stack
+## How it works
 
-- **Python**: collects fares from the Ignav flight price API
-- **PostgreSQL**: stores the price history
-- **FastAPI**: small read-only API behind the website
-- **HTML, CSS and plain JavaScript**: the page itself, no framework, charts drawn as SVG
-- **Grafana**: private dashboard with a price chart, cheapest months and cheapest days
-- **Docker Compose**: runs everything
-- **Caddy**: reverse proxy with automatic HTTPS for the public site
-- **cron**: schedules the weekly scan
+Every Wednesday, cron runs `scanner.py`. It asks the Ignav flight price API for the cheapest one-way fare on every day of the next 11 months, in both directions, once for direct flights and once for flights with stops. The results go into PostgreSQL.
 
-## How it fits together
+Fare Watch is a small FastAPI app that reads from that database, plus one HTML page with plain JavaScript (no framework, charts drawn as SVG). Caddy sits in front of it and handles HTTPS. Grafana reads the same database for my private charts.
 
 ```
- cron (Wednesdays) ─► scanner.py ─► Ignav API
-                          │
-                          ▼
-                     PostgreSQL ◄── read-only users ──┬── Grafana (private, home only)
-                                                      └── Fare Watch API (FastAPI)
-                                                              │
- Internet ─► router (80/443) ─► Caddy (HTTPS) ─► Fare Watch page + API
-                                                              │
-                                              Frankfurter (daily EUR/CAD rate)
+cron (Wednesdays) → scanner.py → Ignav API
+                        ↓
+                    PostgreSQL → Grafana (private)
+                        ↓
+              Fare Watch API (read-only)
+                        ↓
+ internet → router → Caddy (HTTPS) → Fare Watch page
 ```
 
-## Design decisions
+Built with Python, PostgreSQL, FastAPI, HTML/CSS/JavaScript, Grafana, Docker Compose, Caddy and cron.
 
-- **The website can only read.** It connects with its own `web_reader` database user that has `SELECT` on two tables and nothing else, and every query also runs in a read-only transaction. Even a bug in the site can't change or delete prices.
-- **Only known values reach the database.** Routes and stop types are checked against a fixed list before any query runs, and all queries use parameters, never string building.
-- **Hardened container.** The web app runs as a non-root user in a read-only container.
-- **Exchange rate cached.** The rate is fetched at most every 6 hours, sanity-checked, and the last good value is kept if the rate service is down. If no rate is available at all, prices fall back to the currency the airline sells in, with a note.
-- **No live API calls from visitors.** The site only shows what the weekly scan stored, so strangers browsing the site never spend paid API requests.
-- **Works from inside the home network too.** The router can't loop traffic back to its own public IP, so Pi-hole answers the site's domain with the server's local address for devices at home.
+## Problems I had to solve
+
+**Two currencies.** Fares from Amsterdam are sold in euros and fares from Montreal in Canadian dollars, so comparing the two directions side by side didn't mean much. Fare Watch converts everything to the currency you pick using the daily European Central Bank rate (through the Frankfurter API) and keeps the original price visible next to it. The rate is fetched at most every 6 hours and sanity-checked. If the rate service is down, it keeps the last good value, and if there's no rate at all, it falls back to the airline's own currency with a note.
+
+**The API costs money.** Every search on Ignav is a paid request, so visitors never trigger one. The site only shows what the weekly scan already stored, no matter how many people use it.
+
+**It didn't load from my own house.** The site worked from my phone on data but not on my Wi-Fi, because my router can't loop traffic back to its own public IP. Pi-hole now answers the domain with the server's local address for devices at home.
+
+## Keeping it safe
+
+This is the first thing I've put on the public internet that I wrote myself, so I tried to make sure a mistake in my code couldn't do much damage.
+
+The website connects to the database with its own `web_reader` user, which can only `SELECT` from two tables, and every query also runs inside a read-only transaction. Even if there's a bug, it can't change or delete prices.
+
+Routes and stop types from the URL are checked against a fixed list before any query runs, and all queries use parameters instead of building SQL strings.
+
+The web app runs as a non-root user in a read-only container.
 
 ## Files
 
-- `scanner.py`: weekly one-way scan (cheapest price per day, direct vs any stops)
-- `collector.py`: detailed round-trip check for specific dates
+- `scanner.py`: the weekly one-way scan (cheapest price per day, direct vs. any stops)
+- `collector.py`: a more detailed round-trip check for specific dates
 - `schema.sql`: database tables
 - `web/app.py`: the Fare Watch API
 - `web/static/index.html`: the Fare Watch page
-- `grafana/provisioning/`: Grafana data source configuration
+- `grafana/provisioning/`: Grafana's database connection
 
 ## API
 
@@ -74,10 +76,13 @@ Every Wednesday it scans one-way fares between Montreal (YUL) and Amsterdam (AMS
 | `GET /api/rates` | today's EUR/CAD rate |
 | `GET /health` | app and database status |
 
-## Setup
+## Running it yourself
 
-1. Copy `.env.example` to `.env` and fill in your own values
-2. `docker compose up -d db grafana` to start the database and Grafana
+1. Copy `.env.example` to `.env` and fill in your own values.
+2. Start the database and Grafana:
+   ```bash
+   docker compose up -d db grafana
+   ```
 3. Create the read-only user for the website:
    ```bash
    docker exec -i flight-db psql -U flights -d flights -v pw="$(grep '^WEB_DB_PASSWORD=' .env | cut -d= -f2)" <<'SQL'
@@ -87,10 +92,16 @@ Every Wednesday it scans one-way fares between Montreal (YUL) and Amsterdam (AMS
    GRANT SELECT ON fare_calendar, prices TO web_reader;
    SQL
    ```
-4. `docker compose up -d --build web` to start Fare Watch on port 8097
-5. `docker compose run --rm tracker` to run a scan
+4. Start Fare Watch (on port 8097):
+   ```bash
+   docker compose up -d --build web
+   ```
+5. Run a scan:
+   ```bash
+   docker compose run --rm tracker
+   ```
 
-## Next
+## What's next
 
-- Show which airline offers each price, and the stops for trips with layovers
-- Price drop alerts
+- Show which airline has each price, and where the stops are for flights with layovers
+- Alerts when a price drops
