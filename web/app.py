@@ -8,6 +8,7 @@ Endpoints
   GET /api/meta                                   routes, currencies, scan dates
   GET /api/calendar?route=YUL-AMS&stops=direct    latest price for every upcoming day
   GET /api/cheapest?route=YUL-AMS&stops=any       cheapest upcoming prices, equal prices grouped
+  GET /api/airline?route=YUL-AMS&stops=any        airline behind the cheapest fare (from airline_lookup.py)
   GET /api/history?route=YUL-AMS&stops=any&date=2026-12-10
                                                   how one day's price moved, scan after scan
   GET /api/rates                                  today's EUR/CAD exchange rate, for converting prices
@@ -152,6 +153,38 @@ def cheapest(route: str = Query(...), stops: str = Query("any"),
             {"price": float(r["price"]), "currency": r["currency"], "dates": r["dates"]}
             for r in rows
         ],
+    }
+
+
+@app.get("/api/airline")
+def airline(route: str = Query(...), stops: str = Query("any")):
+    """Airline of the cheapest fare, looked up once per weekly scan by airline_lookup.py."""
+    o, d, s = pick(route, stops)
+    try:
+        rows = query("""
+            SELECT departure_date, price, currency, carrier, carrier_codes, mixed_carriers
+            FROM fare_airline
+            WHERE origin = %(o)s AND destination = %(d)s AND stops_filter = %(s)s
+              AND departure_date >= current_date
+            ORDER BY checked_at DESC
+            LIMIT 1
+        """, {"o": o, "d": d, "s": s})
+    except psycopg.errors.UndefinedTable:
+        rows = []  # table not created yet: answer "no airline" instead of an error
+    if not rows:
+        return {"route": route, "stops": stops, "airline": None}
+    r = rows[0]
+    return {
+        "route": route,
+        "stops": stops,
+        "airline": {
+            "date": r["departure_date"],
+            "price": float(r["price"]),
+            "currency": r["currency"],
+            "carrier": r["carrier"],
+            "codes": r["carrier_codes"],
+            "mixed": r["mixed_carriers"],
+        },
     }
 
 

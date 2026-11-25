@@ -104,6 +104,7 @@
   .ticket:first-child { border-top-color: var(--sun); }
   .ticket .rank { font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-soft); }
   .ticket .price { font: 400 32px/1.1 "DM Serif Display", serif; margin: 4px 0 8px; }
+  .ticket .airline { font-size: 13px; color: var(--ink-soft); margin: -4px 0 10px; }
   .ticket ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
   .ticket li button {
     border: 1px solid var(--line); background: var(--paper); border-radius: 8px; padding: 2px 8px; font-size: 13px;
@@ -240,6 +241,7 @@
   const state = {
     route: "YUL-AMS", stops: "any", cur: "CAD",
     meta: null, cal: null, cheap: null, hist: null, selected: null,
+    airline: null,      // airline behind the cheapest fare, from /api/airline
     rates: undefined,   // undefined = still loading, null = unavailable
   };
 
@@ -325,15 +327,24 @@
   }
 
   // ---------- cheapest tickets ----------
+  // Airline name for a fare, only if the looked-up date is one of its dates
+  function airlineFor(p) {
+    const a = state.airline;
+    if (!a || !a.carrier || !p.dates.includes(a.date)) return "";
+    return a.carrier + (a.mixed ? " · mixed airlines" : "");
+  }
+
   function renderTickets() {
     const data = state.cheap, box = $("#tickets");
     if (!data) return;
     if (!data.prices.length) { box.innerHTML = `<p class="muted">No fares found in the latest scan.</p>`; return; }
     const best = data.prices[0];
     $("#bestPrice").textContent = money(best.price, best.currency);
-    $("#bestWhen").textContent = best.dates.length === 1
+    const bestAirline = airlineFor(best);
+    $("#bestWhen").textContent = (best.dates.length === 1
       ? fmtDay(best.dates[0], { weekday: "long", month: "long", day: "numeric" })
-      : `${best.dates.length} days, from ${fmtDay(best.dates[0], { month: "short", day: "numeric" })}`;
+      : `${best.dates.length} days, from ${fmtDay(best.dates[0], { month: "short", day: "numeric" })}`)
+      + (bestAirline ? ` · ${bestAirline}` : "");
     box.innerHTML = data.prices.map((p, i) => {
       const shown = p.dates.slice(0, 4);
       const extra = p.dates.length - shown.length;
@@ -341,6 +352,7 @@
       return `<div class="ticket">
         <div class="rank">${i === 0 ? "Best price" : `#${i + 1}`}</div>
         <div class="price">${esc(money(p.price, p.currency))}${orig}</div>
+        ${i === 0 && airlineFor(p) ? `<div class="airline">✈ ${esc(airlineFor(p))}</div>` : ""}
         <ul>${shown.map(d => `<li><button data-day="${esc(d)}">${esc(fmtDay(d))}</button></li>`).join("")}
         ${extra > 0 ? `<li class="more">+${extra} more</li>` : ""}</ul>
       </div>`;
@@ -461,8 +473,13 @@
     $("#bestPrice").innerHTML = `<span class="skeleton">000 $</span>`;
     try {
       const q = `route=${state.route}&stops=${state.stops}`;
-      const [cal, cheap] = await Promise.all([api(`/api/calendar?${q}`), api(`/api/cheapest?${q}&limit=6`)]);
+      const [cal, cheap, air] = await Promise.all([
+        api(`/api/calendar?${q}`),
+        api(`/api/cheapest?${q}&limit=6`),
+        api(`/api/airline?${q}`).catch(() => null),   // optional: the page still works without it
+      ]);
       state.cal = cal; state.cheap = cheap; state.hist = null;
+      state.airline = air?.airline || null;
       renderConvNote(); renderCalendar(); renderTickets();
       if (state.selected && cal.days.some(d => d.date === state.selected)) showHistory(state.selected, false);
       else $("#history").innerHTML = `<p class="note">Pick a day in the calendar to see how its price changed from one weekly scan to the next.</p>`;
