@@ -3,4 +3,4 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY *.py .
-CMD ["python", "scanner.py"]
+CMD ["sh", "-c", "python scanner.py && python airline_lookup.py"]
